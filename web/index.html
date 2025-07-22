@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>uWSGI Log Viewer</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        /* 新增：確保 html 和 body 佔據整個視窗，並移除 body 的預設滾動條 */
+        html, body {
+            height: 100%; /* 確保 html 和 body 填充整個視窗高度 */
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* 隱藏 body 的滾動條，避免雙重滾動條 */
+        }
+        body {
+            font-family: monospace;
+            background-color: #222; /* 深色背景 */
+            color: #eee; /* 淺色文字，預設顏色 */
+        }
+        h1 {
+            text-align: center;
+            color: #fff;
+            padding: 20px 0;
+            margin-bottom: 0;
+            background-color: #333;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        #logs {
+            width: 95%; /* 稍微縮小寬度 */
+            max-width: 1200px; /* 最大寬度限制 */
+            border: 1px solid #555;
+            padding: 15px;
+            background-color: #1a1a1a; /* 比背景更深的顏色 */
+            margin: 20px auto; /* 居中並上下留白 */
+            box-sizing: border-box; /* 確保 padding 不會增加寬度 */
+            border-radius: 8px; /* 圓角 */
+
+            /* 關鍵改變：給 logs 區塊一個明確的高度，使其內容可以滾動 */
+            height: calc(100vh - 100px); /* 視窗高度減去標題和上下外邊距 */
+            overflow-y: scroll; /* 確保垂直滾動條顯示 */
+            position: relative; /* 有時這有助於確保元素的佈局和滾動行為 */
+        }
+        .log-line {
+            white-space: pre-wrap; /* 保留空白並自動換行 */
+            word-wrap: break-word; /* 長單詞也斷開 */
+            margin-bottom: 4px; /* 行間距 */
+            line-height: 1.4; /* 行高 */
+            font-size: 0.95em; /* 字體大小 */
+        }
+        /* 日誌顏色類別 */
+        .log-info { color: #66bb6a; } /* 默認/信息，改為柔和綠色 */
+        .log-warn { color: #ffeb3b; } /* 警告 (黃色) */
+        .log-error { color: #f44336; } /* 錯誤 (紅色) */
+        .log-critical { color: #d32f2f; font-weight: bold; } /* 嚴重錯誤 (深紅色粗體) */
+        .log-success { color: #4CAF50; } /* 成功/連接 (綠色) */
+        .log-timestamp { color: #66bb6a; margin-right: 8px; } /* 時間戳顏色 */
+    </style>
+</head>
+<body>
+    <h1>uWSGI Log Stream</h1>
+    <div id="logs"></div>
+
+    <script>
+        const logsDiv = document.getElementById('logs');
+
+        // 根據當前頁面協議動態判斷 WebSocket 協議 (wss: for HTTPS, ws: for HTTP)
+        const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
+        // 構建 WebSocket URL。請確保這裡的 '/logs/ws/uwsgi_log' 與你的 Nginx proxy_pass 和 Go 服務完全匹配
+        const wsUrl = wsProtocol + window.location.host + "/logs/ws/uwsgi_log";
+
+        let websocket; // 將 websocket 變數宣告在外部作用域
+
+        function connectWebSocket() {
+            websocket = new WebSocket(wsUrl);
+
+            websocket.onopen = function(event) {
+                appendLog('<span class="log-success">[WebSocket Connected]</span>', 'system');
+            };
+
+            websocket.onmessage = function(event) {
+                // 將接收到的日誌內容添加到 div 中
+                const lines = event.data.split('\n').filter(line => line.trim() !== ''); // 分割並過濾空行
+                lines.forEach(line => {
+                    let colorClass = 'log-info'; // 預設顏色
+                    
+                    // 根據日誌內容判斷顏色
+                    if (line.includes('ERROR') || line.includes('CRITICAL')) {
+                        colorClass = 'log-error';
+                    } else if (line.includes('WARNING') || line.includes('WARN')) {
+                        colorClass = 'log-warn';
+                    } else if (line.includes('INFO')) {
+                        colorClass = 'log-info';
+                    }
+                    
+                    appendLog('<span class="' + colorClass + '">' + escapeHtml(line) + '</span>');
+                });
+            };
+
+            websocket.onclose = function(event) {
+                appendLog('<span class="log-error">[WebSocket Disconnected] Code: ' + event.code + ' Reason: ' + event.reason + '] Attempting to reconnect in 5 seconds...</span>', 'system');
+                setTimeout(connectWebSocket, 5000); // 5秒後嘗試重連
+            };
+
+            websocket.onerror = function(error) {
+                appendLog('<span class="log-critical">[WebSocket Error]: ' + error.message + ']</span>', 'system');
+                console.error('WebSocket Error:', error);
+                websocket.close(); // 發生錯誤時主動關閉，會觸發 onclose 進行重連
+            };
+        }
+
+        // 輔助函數：將日誌行添加到 div 並自動滾動
+        function appendLog(message, type = 'log') {
+            const p = document.createElement('p');
+            p.className = 'log-line';
+            if (type === 'system') {
+                p.style.fontWeight = 'bold';
+            }
+            p.innerHTML = message;
+            logsDiv.appendChild(p);
+
+            // 限制日誌行數，避免內存佔用過高
+            while (logsDiv.children.length > 2000) {
+                logsDiv.removeChild(logsDiv.firstChild);
+            }
+
+            // ====== 關鍵的修改在這裡：暫時移除自動滾動的判斷條件，直接強制滾動 ======
+            setTimeout(() => {
+                logsDiv.scrollTop = logsDiv.scrollHeight;
+                console.log('Forcing scroll to bottom. ScrollTop:', logsDiv.scrollTop, 'ScrollHeight:', logsDiv.scrollHeight, 'ClientHeight:', logsDiv.clientHeight);
+            }, 0);
+            // ====================================================================
+        }
+
+        // 輔助函數：HTML 實體化，防止 XSS
+        function escapeHtml(text) {
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // 頁面載入時啟動 WebSocket 連接
+        window.onload = connectWebSocket;
+    </script>
+</body>
+</html>
